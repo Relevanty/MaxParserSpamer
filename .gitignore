@@ -1,0 +1,42 @@
+# Node modules
+node_modules/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Runtime data / caches
+coverage/
+dist/
+build/
+
+# Environment files
+.env
+.env.*
+
+# Local workspace files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# OneDrive/Windows sync artifacts
+# (avoid uploading OneDrive metadata or temp files)
+~$*
+
+# Project-specific generated or sensitive data
+storage/
+report.csv
+analytics-report.csv
+analytics-*.csv
+
+# Optional: ignore temporary lists/messages if you don't want to add raw data
+# Uncomment to enable
+#lists/
+#messages/

@@ -1,0 +1,23 @@
+{
+  "name": "relevanty-spamer-node",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node tools/start.js",
+    "spam": "node src/index.js",
+    "start:tginstant": "set SEND_MODE=instant && node src/console.js",
+    "parse": "node src/parser.js",
+    "collect": "node src/analytics-collect.js",
+    "report": "node src/analytics-report.js",
+    "cleanup": "node src/cleanup-ids.js",
+    "check": "node --check src/index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.26.3",
+    "dotenv": "^16.6.1",
+    "input": "^1.0.1",
+    "qrcode-terminal": "^0.12.0",
+    "telegram": "^2.26.22"
+  }
+}
