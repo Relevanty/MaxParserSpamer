@@ -18,9 +18,8 @@ git clone https://github.com/Relevanty/tgSpamer.git
 cd RelevantySpamer
 
 # Установите зависимости (Node.js >= 18)
-npm ci
+npm i
 ```
-> **Важно:** проект использует ESM‑модули, поэтому `package.json` содержит `"type": "module"`.
 
 ## ⚙️ Конфигурация
 Все параметры задаются в файле `.env` в корне проекта.
@@ -38,7 +37,6 @@ SEND_MODE=instant                    # `instant` – мгновенная отп
 > **Безопасность:** файл `.env` **не должен** попадать в публичный репозиторий. Добавьте его в `.gitignore`.
 
 ## ▶️ Запуск
-Для удобства в `tools/start.js` реализован «bootstrap», поэтому основной скрипт запускается так:
 ```bash
 npm start
 ```
