@@ -15,7 +15,6 @@ build/
 
 # Environment files
 .env
-.env.*
 
 # Local workspace files
 .vscode/
