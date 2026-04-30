@@ -1,41 +1,30 @@
-# Node modules
-node_modules/
+# Environment & secrets
+.env
+.env.*
+!.env.example
 
-# Logs
-logs/
-*.log
+# User Data & Storage (Private)
+storage/
+lists/
+messages/
+*.csv
+*.html
+*.json
+!package.json
+!package-lock.json
+
+# npm
+node_modules/
 npm-debug.log*
 yarn-debug.log*
-pnpm-debug.log*
+yarn-error.log*
 
-# Runtime data / caches
-coverage/
-dist/
-build/
-
-# Environment files
-.env
-
-# Local workspace files
-.vscode/
-.idea/
-
-# OS files
+# OS
 .DS_Store
 Thumbs.db
-Desktop.ini
 
-# OneDrive/Windows sync artifacts
-# (avoid uploading OneDrive metadata or temp files)
-~$*
-
-# Project-specific generated or sensitive data
-storage/
-report.csv
-analytics-report.csv
-analytics-*.csv
-
-# Optional: ignore temporary lists/messages if you don't want to add raw data
-# Uncomment to enable
-#lists/
-#messages/
+# Editor & Workspace
+.vscode/
+.idea/
+.gemini/
+.antigravity/

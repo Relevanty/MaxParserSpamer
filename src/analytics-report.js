@@ -6,12 +6,18 @@ class ReportParser {
   async parse(csvPath) {
     const content = await readFile(csvPath, "utf8");
     const lines = content.trim().split(/\r?\n/);
-    const header = parseCsvLine(lines[0] ?? "").map(s => s.trim().toLowerCase());
-    const hasMessageCount = header.includes("messagecount");
+    
+    // Detect if first row is header (contains "timestamp", "user", etc.)
+    const firstRowLower = parseCsvLine(lines[0] ?? "").map(s => s.trim().toLowerCase());
+    const hasHeader = firstRowLower[0]?.includes("time") || firstRowLower[1]?.includes("user");
+    const startIdx = hasHeader ? 1 : 0;
+    
+    // Determine if has messagecount column (5+ columns, and col[3] is numeric/msg-related)
+    const hasMessageCount = firstRowLower.length >= 5 && (firstRowLower[3]?.includes("message") || !isNaN(firstRowLower[3]));
     const statusIdx = hasMessageCount ? 4 : 3;
 
     const rows = [];
-    for (const line of lines.slice(1)) {
+    for (const line of lines.slice(startIdx)) {
       if (!line.trim()) continue;
       const cols = parseCsvLine(line);
       rows.push({

@@ -1,6 +1,5 @@
 export function getUserIdentifier(user) {
   if (user.username) return user.username;
-  if (user.id && user.accessHash) return `${user.id}:${user.accessHash}`;
   return null;
 }
 

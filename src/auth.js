@@ -171,7 +171,11 @@ export async function startClient(apiId, apiHash, forceSms, authMethod) {
     const stringSession = new StringSession(sessionString);
     const envPath = path.resolve(".env");
 
-    const client = new TelegramClient(stringSession, apiId, apiHash, { connectionRetries: 5 });
+    const client = new TelegramClient(stringSession, apiId, apiHash, {
+        connectionRetries: 5,
+        receiveUpdates: false,
+    });
+    client.setLogLevel("error");
 
     const originalConsole = { info: console.info, debug: console.debug, warn: console.warn };
     try {
@@ -208,6 +212,33 @@ export async function startClient(apiId, apiHash, forceSms, authMethod) {
         console.log("SESSION_STRING для .env:");
         console.log(savedSessionString);
     }
+
+    // Suppress background update loop TIMEOUT errors from the Telegram library
+    // These errors are noisy (internal retries) — filter them for the lifetime of the client
+    const originalConsoleError = console.error;
+    const suppressedPatterns = ["TIMEOUT", "_updateLoop", "updates.js"];
+    console.error = function(...args) {
+        try {
+            const msg = args.map(a => (typeof a === 'string' ? a : String(a))).join(' ');
+            if (suppressedPatterns.some(pattern => msg.includes(pattern))) return;
+        } catch (e) {
+            // fallback to original behavior if formatting fails
+        }
+        originalConsoleError.apply(console, args);
+    };
+
+    // Ensure we restore console.error when the client disconnects
+    const origDisconnect = client.disconnect.bind(client);
+    client.disconnect = async function(...args) {
+        try { console.error = originalConsoleError; } catch (e) { /* ignore */ }
+        // restore original method to avoid double-wrapping
+        client.disconnect = origDisconnect;
+        return origDisconnect(...args);
+    };
+
+    // Also restore on process exit as a safety net
+    const restoreOnExit = () => { try { console.error = originalConsoleError; } catch (e) { } };
+    process.once('exit', restoreOnExit);
 
     return client;
 }

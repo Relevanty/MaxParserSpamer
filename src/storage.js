@@ -29,3 +29,19 @@ export async function saveProcessedUsers(filePath, processedUsersSet) {
   };
   await writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
 }
+
+export async function loadAccounts(filePath) {
+  try {
+    const raw = await readFile(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed;
+    return [];
+  } catch (error) {
+    return [];
+  }
+}
+
+export async function saveAccounts(filePath, accounts) {
+  await mkdir(dirname(filePath), { recursive: true });
+  await writeFile(filePath, `${JSON.stringify(accounts, null, 2)}\n`, "utf8");
+}

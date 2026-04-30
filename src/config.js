@@ -12,6 +12,7 @@ export const PATHS = {
   CONVERSATIONS_JSON: path.resolve("storage", "conversations.json"),
   ANALYTICS_CSV: path.resolve("analytics-report.csv"),
   ANALYTICS_HTML: path.resolve("analytics-report.html"),
+  ACCOUNTS_JSON: path.resolve("storage", "accounts.json"),
 };
 
 export const DISCORD_CONFIG = {

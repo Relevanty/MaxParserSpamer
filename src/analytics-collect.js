@@ -5,6 +5,7 @@ import { Api, TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions/index.js";
 import { PATHS } from "./config.js";
 import { parseCsvLine, sleep } from "./utils.js";
+import { validateEnv, startClient } from "./auth.js";
 
 const FETCH_DELAY_MS = 1500;
 const MESSAGES_PER_CHAT = 100;
@@ -93,16 +94,20 @@ class ConversationCollector {
   async #loadTargetUsers() {
     const content = await readFile(PATHS.REPORT_CSV, "utf8");
     const lines = content.trim().split(/\r?\n/);
-    const header = parseCsvLine(lines[0] ?? "").map(s => s.trim().toLowerCase());
-    const statusIdx = header.includes("messagecount") ? 4 : 3;
+    
+    // Detect if first row is header (contains "timestamp", "user", etc.)
+    const firstRowLower = parseCsvLine(lines[0] ?? "").map(s => s.trim().toLowerCase());
+    const hasHeader = firstRowLower[0]?.includes("time") || firstRowLower[1]?.includes("user");
+    const startIdx = hasHeader ? 1 : 0;
 
+    // Collect ALL unique users from report (regardless of send status)
+    // This allows analyzing conversations even for users where the send failed
     const users = new Set();
-    for (const line of lines.slice(1)) {
+    for (const line of lines.slice(startIdx)) {
       if (!line.trim()) continue;
       const cols = parseCsvLine(line);
       const user = cols[1]?.trim().toLowerCase();
-      const status = cols[statusIdx]?.trim() ?? "";
-      if (user && (status === "Success" || status.startsWith("Scheduled:"))) {
+      if (user) {
         users.add(user);
       }
     }
@@ -115,7 +120,8 @@ class ConversationCollector {
     let offsetDate = 0, offsetId = 0;
     let offsetPeer = new Api.InputPeerEmpty();
 
-    for (let page = 0; page < 50; page++) {
+    // Increase pages so we can discover thousands of dialogs if they exist
+    for (let page = 0; page < 200; page++) {
       const result = await this.#client.invoke(new Api.messages.GetDialogs({
         offsetDate, offsetId, offsetPeer,
         limit: 100,
@@ -129,8 +135,14 @@ class ConversationCollector {
       for (const user of result.users ?? []) {
         const username = user.username ? `@${user.username.toLowerCase()}` : null;
         const idKey = `id:${user.id}`;
-        if (username && targetUsers.has(username)) map.set(username, user);
-        if (targetUsers.has(idKey)) map.set(idKey, user);
+        // If no targetUsers provided, index all dialogs (username + id)
+        if (!targetUsers || targetUsers.size === 0) {
+          if (username) map.set(username, user);
+          map.set(idKey, user);
+        } else {
+          if (username && targetUsers.has(username)) map.set(username, user);
+          if (targetUsers.has(idKey)) map.set(idKey, user);
+        }
       }
 
       if (result.dialogs.length < 100) break;
@@ -185,34 +197,9 @@ function classifyOutcome({ hasExternalLink, hasConnectedCall, hasUsernameMention
   return "no_reply";
 }
 
-async function connectClient() {
-  const apiId = Number(process.env.API_ID);
-  const apiHash = process.env.API_HASH;
-  if (!apiId || !apiHash) throw new Error("API_ID/API_HASH missing in .env");
-
-  const client = new TelegramClient(
-    new StringSession(process.env.SESSION_STRING ?? ""),
-    apiId, apiHash,
-    { connectionRetries: 5 },
-  );
-
-  const orig = { info: console.info, debug: console.debug, warn: console.warn };
-  try {
-    console.info = console.debug = console.warn = () => {};
-    await client.connect();
-  } finally {
-    Object.assign(console, orig);
-  }
-
-  if (!await client.checkAuthorization()) {
-    throw new Error("Session expired. Run the spammer first to refresh the session.");
-  }
-
-  return client;
-}
-
 export async function runAnalyticsCollect() {
-  const client = await connectClient();
+  const { apiId, apiHash, forceSms, authMethod } = validateEnv();
+  const client = await startClient(apiId, apiHash, forceSms, authMethod);
   try {
     const collector = new ConversationCollector(client);
     const results = await collector.collect();

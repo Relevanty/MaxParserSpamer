@@ -7,6 +7,13 @@ const DEFAULTS = {
     sendMode: "schedule",
     messageSource: "maxim",
     savedN: 3,
+    maximIntervals: "2-1-2",
+    maximN: 1,
+    specificFile: null,
+    specificList: null,
+    language: "en",
+    textMessages: [],
+    maximAppendText: "",
 };
 
 export async function loadSettings() {

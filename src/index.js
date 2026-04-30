@@ -5,7 +5,6 @@ import {
   LOG_MODE,
   PATHS,
   RATE_LIMITS,
-  SAVED_MESSAGES_CONFIG,
   STICKER_CONFIG,
   SCHEDULER_CONFIG,
 } from "./config.js";
@@ -15,6 +14,7 @@ import { appendReportRow } from "./report.js";
 import { loadProcessedUsers, saveProcessedUsers } from "./storage.js";
 import { normalizeUsername, sleep, usernameKey } from "./utils.js";
 import { getErrorMessage, validateEnv, startClient } from "./auth.js";
+import { t } from "./i18n.js";
 
 function nowStamp() {
   return new Date().toISOString().replace("T", " ").slice(0, 19);
@@ -30,13 +30,9 @@ function parseIntervals(str) {
     .filter((n) => Number.isInteger(n) && n > 0);
 }
 
-function getStrictSliceIndices(userIndex, intervals, totalMessages) {
+function getStrictSliceIndices(userIndex, intervals, totalMessages, fixedN = 1) {
   if (!intervals || !intervals.length) {
-    const envN = Number(process.env.SAVED_MESSAGES_N);
-    const n =
-      envN && envN > 0
-        ? envN
-        : Math.max(1, Number(SAVED_MESSAGES_CONFIG.N) || 1);
+    const n = Math.max(1, fixedN);
     return { start: totalMessages - n, end: totalMessages, count: n };
   }
   let offset = 0;
@@ -123,6 +119,7 @@ const SKIPPABLE_ERRORS = [
   "USER_DEACTIVATED_BAN",
   "CANNOT FIND ANY ENTITY",
   "THE SPECIFIED USER WAS DELETED",
+  "TIMEOUT",
 ];
 
 function isSkippableError(message) {
@@ -139,63 +136,41 @@ function extractMessageText(message) {
   return "";
 }
 
-// ========== ФУНКЦИИ ДЛЯ РАБОТЫ С @SpamBot ==========
-
 async function getSpamBotStatus(client) {
   const commandUnixTime = Math.floor(Date.now() / 1000) - 3;
-  await client.sendMessage(FLOOD_GUARD.SPAM_BOT_USERNAME, {
-    message: "/start",
-  });
+  await client.sendMessage(FLOOD_GUARD.SPAM_BOT_USERNAME, { message: "/start" });
 
   for (let attempt = 0; attempt < FLOOD_GUARD.POLL_ATTEMPTS; attempt += 1) {
-    await sleep(
-      attempt === 0
-        ? FLOOD_GUARD.INITIAL_WAIT_MS
-        : FLOOD_GUARD.POLL_INTERVAL_MS,
-    );
+    await sleep(attempt === 0 ? FLOOD_GUARD.INITIAL_WAIT_MS : FLOOD_GUARD.POLL_INTERVAL_MS);
 
-    const messages = await client.getMessages(FLOOD_GUARD.SPAM_BOT_USERNAME, {
-      limit: 10,
-    });
+    const messages = await client.getMessages(FLOOD_GUARD.SPAM_BOT_USERNAME, { limit: 10 });
     if (!messages || messages.length === 0) continue;
 
     const freshIncoming = messages.find(
-      (m) =>
-        !m.out &&
-        Number.isFinite(Number(m.date)) &&
-        Number(m.date) >= commandUnixTime &&
-        extractMessageText(m),
+      (m) => !m.out && Number.isFinite(Number(m.date)) && Number(m.date) >= commandUnixTime && extractMessageText(m),
     );
-    const bestMessage =
-      freshIncoming || messages.find((m) => !m.out && extractMessageText(m));
+    const bestMessage = freshIncoming || messages.find((m) => !m.out && extractMessageText(m));
     if (!bestMessage) continue;
 
     const statusText = extractMessageText(bestMessage);
     const lower = statusText.toLowerCase();
-    const hasRestriction =
-      !lower.includes("good news") && !lower.includes("no limits");
+    const hasRestriction = !lower.includes("good news") && !lower.includes("no limits");
     return { hasRestriction, statusText };
   }
 
-  return { hasRestriction: null, statusText: "Нет ответа от @SpamBot" };
+  return { hasRestriction: null, statusText: t("spamBotNoResponse") };
 }
 
 async function getSpamBotMessageWithButtons(client, minUnixTime = 0) {
   for (let attempt = 0; attempt < FLOOD_GUARD.POLL_ATTEMPTS; attempt += 1) {
     if (attempt > 0) await sleep(FLOOD_GUARD.POLL_INTERVAL_MS);
 
-    const messages = await client.getMessages(FLOOD_GUARD.SPAM_BOT_USERNAME, {
-      limit: 10,
-    });
+    const messages = await client.getMessages(FLOOD_GUARD.SPAM_BOT_USERNAME, { limit: 10 });
     if (!messages || messages.length === 0) continue;
 
-    const hasButtons = (m) =>
-      !m.out && m.replyMarkup && Array.isArray(m.replyMarkup.rows);
+    const hasButtons = (m) => !m.out && m.replyMarkup && Array.isArray(m.replyMarkup.rows);
     const fresh = messages.find(
-      (m) =>
-        hasButtons(m) &&
-        Number.isFinite(Number(m.date)) &&
-        Number(m.date) >= minUnixTime,
+      (m) => hasButtons(m) && Number.isFinite(Number(m.date)) && Number(m.date) >= minUnixTime,
     );
     const result = fresh || messages.find(hasButtons);
     if (result) return result;
@@ -224,19 +199,13 @@ async function clickButtonByText(client, chat, msg, buttonText) {
       if (hasCallbackData) {
         try {
           await client.invoke(
-            new Api.messages.GetBotCallbackAnswer({
-              peer,
-              msgId: msg.id,
-              data: button.data,
-            }),
+            new Api.messages.GetBotCallbackAnswer({ peer, msgId: msg.id, data: button.data }),
           );
           return true;
         } catch (error) {
           const msg2 = getErrorMessage(error);
           if (!String(msg2).toUpperCase().includes("DATA_INVALID")) throw error;
-          console.log(
-            `Некорректный callback для кнопки "${label}", пробую отправить текст кнопки.`,
-          );
+          console.log(t("spamBotInvalidCallback", label));
         }
       }
 
@@ -246,43 +215,32 @@ async function clickButtonByText(client, chat, msg, buttonText) {
   }
 
   if (availableButtons.length > 0) {
-    console.log(
-      `Кнопка "${buttonText}" не найдена. Доступные: ${availableButtons.join(" | ")}`,
-    );
+    console.log(t("spamBotBtnAvailable", availableButtons.join(" | ")));
   }
   return false;
 }
 
 async function attemptUnblock(client) {
-  console.log("Пробую снять ограничение через диалог с @SpamBot...");
+  console.log(t("spamBotTryUnblock"));
   const startUnixTime = Math.floor(Date.now() / 1000) - 2;
-  await client.sendMessage(FLOOD_GUARD.SPAM_BOT_USERNAME, {
-    message: "/start",
-  });
+  await client.sendMessage(FLOOD_GUARD.SPAM_BOT_USERNAME, { message: "/start" });
   await sleep(FLOOD_GUARD.INITIAL_WAIT_MS);
 
   let msg = await getSpamBotMessageWithButtons(client, startUnixTime);
   if (!msg) {
-    console.log("Нет ответа с кнопками от @SpamBot");
+    console.log(t("spamBotNoButtons"));
     return false;
   }
 
   const initialText = extractMessageText(msg).toLowerCase();
   if (initialText.includes("good news") || initialText.includes("no limits")) {
-    console.log("На аккаунте уже нет ограничений.");
+    console.log(t("spamBotAlreadyOk"));
     return true;
   }
 
-  console.log('Нажимаю "why was I reported?"...');
-  if (
-    !(await clickButtonByText(
-      client,
-      FLOOD_GUARD.SPAM_BOT_USERNAME,
-      msg,
-      "why was I reported",
-    ))
-  ) {
-    console.log('Кнопка "why was I reported?" не найдена.');
+  console.log(t("spamBotClickWhy"));
+  if (!(await clickButtonByText(client, FLOOD_GUARD.SPAM_BOT_USERNAME, msg, "why was I reported"))) {
+    console.log(t("spamBotBtnNotFound", "why was I reported?"));
     return false;
   }
 
@@ -290,31 +248,22 @@ async function attemptUnblock(client) {
   const secondStepUnixTime = Math.floor(Date.now() / 1000) - 2;
   msg = await getSpamBotMessageWithButtons(client, secondStepUnixTime);
   if (!msg) {
-    console.log("Нет ответа после первого клика");
+    console.log(t("spamBotNoFirstResp"));
     return false;
   }
 
-  console.log('Нажимаю "i understand, thanks"...');
-  if (
-    !(await clickButtonByText(
-      client,
-      FLOOD_GUARD.SPAM_BOT_USERNAME,
-      msg,
-      "i understand, thanks",
-    ))
-  ) {
-    console.log('Кнопка "i understand, thanks" не найдена.');
+  console.log(t("spamBotClickUnderstand"));
+  if (!(await clickButtonByText(client, FLOOD_GUARD.SPAM_BOT_USERNAME, msg, "i understand, thanks"))) {
+    console.log(t("spamBotBtnNotFound", "i understand, thanks"));
     return false;
   }
 
   await sleep(FLOOD_GUARD.INITIAL_WAIT_MS);
-  console.log("Проверяю финальный статус...");
+  console.log(t("spamBotFinalCheck"));
   const finalStatus = await getSpamBotStatus(client);
-  console.log(`Финальный статус: ${finalStatus.statusText}`);
+  console.log(t("spamBotFinalStatus", finalStatus.statusText));
   return finalStatus.hasRestriction === false;
 }
-
-// ========== КОНЕЦ ФУНКЦИЙ ДЛЯ @SpamBot ==========
 
 async function appendLog(user, status, messageCount = "") {
   await appendReportRow(PATHS.REPORT_CSV, {
@@ -327,18 +276,13 @@ async function appendLog(user, status, messageCount = "") {
 }
 
 async function loadStickerDocument(client) {
-  const stickerSets = await client.invoke(
-    new Api.messages.GetAllStickers({ hash: 0 }),
-  );
+  const stickerSets = await client.invoke(new Api.messages.GetAllStickers({ hash: 0 }));
   if (!stickerSets?.sets?.length) return null;
 
   const firstSet = stickerSets.sets[0];
   const stickerSet = await client.invoke(
     new Api.messages.GetStickerSet({
-      stickerset: new Api.InputStickerSetID({
-        id: firstSet.id,
-        accessHash: firstSet.accessHash,
-      }),
+      stickerset: new Api.InputStickerSetID({ id: firstSet.id, accessHash: firstSet.accessHash }),
       hash: 0,
     }),
   );
@@ -349,13 +293,8 @@ async function loadStickerDocument(client) {
 
 async function forwardSavedMessages(client, user, savedMessages) {
   for (let index = 0; index < savedMessages.length; index += 1) {
-    await client.forwardMessages(user, {
-      messages: [savedMessages[index].id],
-      fromPeer: "me",
-      dropAuthor: false,
-    });
-    if (index < savedMessages.length - 1)
-      await sleep(RATE_LIMITS.INTER_MESSAGE_DELAY_MS);
+    await client.forwardMessages(user, { messages: [savedMessages[index].id], fromPeer: "me", dropAuthor: false });
+    if (index < savedMessages.length - 1) await sleep(RATE_LIMITS.INTER_MESSAGE_DELAY_MS);
   }
 }
 
@@ -379,10 +318,7 @@ function computeNextPeakUtcMs() {
     if (candidate.getTime() <= mskNow.getTime()) {
       candidate.setTime(candidate.getTime() + 24 * 60 * 60 * 1000);
     }
-    const jitter = randomInt(
-      -SCHEDULER_CONFIG.PEAK_JITTER_MINUTES,
-      SCHEDULER_CONFIG.PEAK_JITTER_MINUTES,
-    );
+    const jitter = randomInt(-SCHEDULER_CONFIG.PEAK_JITTER_MINUTES, SCHEDULER_CONFIG.PEAK_JITTER_MINUTES);
     candidate.setTime(candidate.getTime() + jitter * 60 * 1000);
     if (candidate.getTime() <= mskNow.getTime()) {
       candidate.setTime(candidate.getTime() + 24 * 60 * 60 * 1000);
@@ -395,18 +331,9 @@ function computeNextPeakUtcMs() {
 
 async function forwardSavedMessagesWithGaps(client, user, savedMessages) {
   for (let index = 0; index < savedMessages.length; index += 1) {
-    await client.forwardMessages(user, {
-      messages: [savedMessages[index].id],
-      fromPeer: "me",
-      dropAuthor: false,
-    });
+    await client.forwardMessages(user, { messages: [savedMessages[index].id], fromPeer: "me", dropAuthor: false });
     if (index < savedMessages.length - 1) {
-      await sleep(
-        randomInt(
-          SCHEDULER_CONFIG.INTER_MESSAGE_GAP_MS_MIN,
-          SCHEDULER_CONFIG.INTER_MESSAGE_GAP_MS_MAX,
-        ),
-      );
+      await sleep(randomInt(SCHEDULER_CONFIG.INTER_MESSAGE_GAP_MS_MIN, SCHEDULER_CONFIG.INTER_MESSAGE_GAP_MS_MAX));
     }
   }
 }
@@ -418,10 +345,7 @@ async function scheduleForwardMessagesViaTelegram(client, user, savedMessages) {
 
   for (let i = 0; i < savedMessages.length; i += 1) {
     if (i > 0) {
-      cumulative += randomInt(
-        SCHEDULER_CONFIG.INTER_MESSAGE_GAP_MS_MIN,
-        SCHEDULER_CONFIG.INTER_MESSAGE_GAP_MS_MAX,
-      );
+      cumulative += randomInt(SCHEDULER_CONFIG.INTER_MESSAGE_GAP_MS_MIN, SCHEDULER_CONFIG.INTER_MESSAGE_GAP_MS_MAX);
     }
     const scheduledMs = baseUtcMs + cumulative;
 
@@ -437,10 +361,35 @@ async function scheduleForwardMessagesViaTelegram(client, user, savedMessages) {
       );
       scheduledTimestamps.push(scheduledMs);
     } catch (err) {
-      console.error(
-        `Ошибка планирования пересылки для ${user}:`,
-        getErrorMessage(err),
+      console.error(`Error scheduling forward for ${user}:`, getErrorMessage(err));
+    }
+  }
+
+  return scheduledTimestamps;
+}
+
+async function scheduleTextMessages(client, user, textMessages) {
+  const baseUtcMs = computeNextPeakUtcMs();
+  let cumulative = 0;
+  const scheduledTimestamps = [];
+
+  for (let i = 0; i < textMessages.length; i += 1) {
+    if (i > 0) {
+      cumulative += randomInt(SCHEDULER_CONFIG.INTER_MESSAGE_GAP_MS_MIN, SCHEDULER_CONFIG.INTER_MESSAGE_GAP_MS_MAX);
+    }
+    const scheduledMs = baseUtcMs + cumulative;
+
+    try {
+      await client.invoke(
+        new Api.messages.SendMessage({
+          peer: user,
+          message: textMessages[i],
+          scheduleDate: Math.floor(scheduledMs / 1000),
+        }),
       );
+      scheduledTimestamps.push(scheduledMs);
+    } catch (err) {
+      console.error(`Error scheduling text message:`, getErrorMessage(err));
     }
   }
 
@@ -460,9 +409,14 @@ function parseUserEntry(raw) {
   return value.startsWith("@") ? value : `@${value}`;
 }
 
-export async function runSpammer(settings = {}) {
+export async function runSpammer(settings = {}, onProgress = () => {}) {
   const { apiId, apiHash, forceSms, authMethod } = validateEnv();
-  const usersFromLists = await loadListUsers(PATHS.LISTS_DIR);
+  let usersFromLists = await loadListUsers(PATHS.LISTS_DIR);
+
+  if (settings.specificList) {
+    usersFromLists = usersFromLists.filter((u) => u.fileName === settings.specificList);
+  }
+
   let { nextIndex: startIndex } = await loadProgressState(
     PATHS.PROGRESS_STATE_JSON,
     usersFromLists.length,
@@ -471,121 +425,95 @@ export async function runSpammer(settings = {}) {
   const usersSeenThisRun = new Set();
 
   if (startIndex === 0 && processedUsers.size > 0) {
-    const derivedStartIndex = findResumeIndexFromProcessed(
-      usersFromLists,
-      processedUsers,
-    );
+    const derivedStartIndex = findResumeIndexFromProcessed(usersFromLists, processedUsers);
     if (derivedStartIndex > 0) {
       startIndex = derivedStartIndex;
-      await saveProgressState(
-        PATHS.PROGRESS_STATE_JSON,
-        startIndex,
-        usersFromLists.length,
-      );
-      console.log(
-        `Точка продолжения инициализирована из обработанных пользователей: строка ${startIndex + 1}`,
-      );
+      await saveProgressState(PATHS.PROGRESS_STATE_JSON, startIndex, usersFromLists.length);
+      console.log(t("resumeInitialized", startIndex + 1));
     }
   }
 
   if (startIndex >= usersFromLists.length) {
-    console.log(`Загружено пользователей: ${usersFromLists.length}`);
-    console.log(`Уже обработано пользователей: ${processedUsers.size}`);
-    console.log("В списках нет необработанных строк. Отправлять нечего.");
+    console.log(t("loadedUsers", usersFromLists.length));
+    console.log(t("alreadyProcessed", processedUsers.size));
+    console.log(t("nothingToSend"));
     return;
   }
 
   const client = await startClient(apiId, apiHash, forceSms, authMethod);
   const me = await client.getMe();
-  console.log(`Вход выполнен как ${me.username || me.firstName || me.id}`);
+  console.log(t("loggedInAs", me.username || me.firstName || me.id));
 
-  const envMode = (process.env.SEND_MODE || "").trim().toLowerCase();
-  const sendMode = envMode || SCHEDULER_CONFIG.MODE || "schedule";
+  const sendMode = settings.sendMode || (process.env.SEND_MODE || "").trim().toLowerCase() || SCHEDULER_CONFIG.MODE || "schedule";
   const isScheduling = String(sendMode).toLowerCase() === "schedule";
 
   CURRENT_LOG_MODE = isScheduling ? "Scheduled" : "Instant";
-  console.log(
-    `Send mode: ${isScheduling ? "schedule (server)" : "instant (immediate)"}`,
-  );
+  console.log(t("sendModeLog", isScheduling ? t("scheduleMode") : t("instantMode")));
 
   const messageSource = settings.messageSource || "maxim";
 
   let txtFiles = [];
   let cachedSavedMessages = [];
   let intervals = [];
+  let textMessages = [];
 
   if (messageSource === "txt") {
     txtFiles = await loadMessageFiles(PATHS.MESSAGES_DIR);
-    if (txtFiles.length === 0) {
-      throw new Error("No message files found in messages/. Add at least one .txt file.");
+    if (settings.specificFile) {
+      const match = txtFiles.find((f) => f.fileName === settings.specificFile);
+      if (match) txtFiles = [match];
     }
-    console.log(`Loaded ${txtFiles.length} message file(s) from messages/.`);
+    if (txtFiles.length === 0) throw new Error(t("noMsgFiles"));
+    console.log(t("loadedMsgFiles", txtFiles.length));
   } else if (messageSource === "saved-n") {
     const n = settings.savedN || 3;
     const rawSaved = await client.getMessages("me", { limit: n });
-    if (!rawSaved || rawSaved.length === 0) {
-      throw new Error("No messages in Saved Messages. Save at least one message first.");
-    }
+    if (!rawSaved || rawSaved.length === 0) throw new Error(t("noSavedMessages"));
     cachedSavedMessages = [...rawSaved].reverse();
-    console.log(`Loaded ${cachedSavedMessages.length} messages from Saved Messages.`);
+    console.log(t("loadedSavedN", cachedSavedMessages.length));
+  } else if (messageSource === "text-seq") {
+    textMessages = Array.isArray(settings.textMessages) ? settings.textMessages : [];
+    if (textMessages.length === 0) throw new Error(t("noTextMessages"));
+    console.log(t("seqTextMsgs", textMessages.length));
   } else {
-    const envIntervals = parseIntervals(process.env.SAVED_MESSAGES_INTERVALS);
-    intervals = envIntervals.length
-      ? envIntervals
-      : parseIntervals(SAVED_MESSAGES_CONFIG.INTERVALS);
-    const maxN = intervals.length
-      ? intervals.reduce((a, b) => a + b, 0)
-      : Math.max(1, Number(process.env.SAVED_MESSAGES_N) || SAVED_MESSAGES_CONFIG.N);
+    intervals = parseIntervals(settings.maximIntervals || "");
+    const fixedN = Math.max(1, Number(settings.maximN) || 1);
+    const maxN = intervals.length ? intervals.reduce((a, b) => a + b, 0) : fixedN;
     const rawSaved = await client.getMessages("me", { limit: maxN });
-    if (!rawSaved || rawSaved.length === 0) {
-      throw new Error("В «Избранном» нет сообщений. Сохраните хотя бы одно сообщение в Saved Messages.");
-    }
+    if (!rawSaved || rawSaved.length === 0) throw new Error(t("noMaximMessages"));
     cachedSavedMessages = [...rawSaved].reverse();
-    console.log(`Загружено ${cachedSavedMessages.length} сообщений из «Избранного» (макс ${maxN}).`);
+    console.log(t("loadedMaxim", cachedSavedMessages.length, maxN));
   }
-  console.log("Загрузка существующих чатов...");
 
+  console.log(t("loadingChats"));
   const existingDialogIds = await loadExistingDialogIds(client);
-  console.log(`Найдено активных чатов: ${existingDialogIds.size}.`);
-  console.log(`Загружено пользователей: ${usersFromLists.length}`);
-  console.log(`Уже обработано пользователей: ${processedUsers.size}`);
-  if (startIndex > 0) {
-    console.log(`Продолжаем с строки: ${startIndex + 1}`);
-  }
+  console.log(t("foundChats", existingDialogIds.size));
+  console.log(t("loadedUsers", usersFromLists.length));
+  console.log(t("alreadyProcessed", processedUsers.size));
+  if (startIndex > 0) console.log(t("resumingFrom", startIndex + 1));
 
   let attemptCounter = 0;
+  let consecutiveFloodErrors = 0;
+  const FLOOD_BLOCK_THRESHOLD = 3;
 
   try {
-    for (
-      let rowIndex = startIndex;
-      rowIndex < usersFromLists.length;
-      rowIndex += 1
-    ) {
+    for (let rowIndex = startIndex; rowIndex < usersFromLists.length; rowIndex += 1) {
       const row = usersFromLists[rowIndex];
       const nextIndex = rowIndex + 1;
       const userEntry = parseUserEntry(row.raw);
 
       if (!userEntry) {
-        await saveProgressState(
-          PATHS.PROGRESS_STATE_JSON,
-          nextIndex,
-          usersFromLists.length,
-        );
+        await saveProgressState(PATHS.PROGRESS_STATE_JSON, nextIndex, usersFromLists.length);
         continue;
       }
 
-      const userLabel =
-        typeof userEntry === "string" ? userEntry : `id:${userEntry.userId}`;
+      const userLabel = typeof userEntry === "string" ? userEntry : `id:${userEntry.userId}`;
       const dedupeKey = usernameKey(userLabel);
 
       if (usersSeenThisRun.has(dedupeKey) || processedUsers.has(dedupeKey)) {
-        console.log(`ПРОПУСК дубликата пользователя: ${userLabel}`);
+        onProgress({ type: "skip", user: userLabel, reason: "duplicate" });
         await appendLog(userLabel, "Skipped: duplicate username");
-        await saveProgressState(
-          PATHS.PROGRESS_STATE_JSON,
-          nextIndex,
-          usersFromLists.length,
-        );
+        await saveProgressState(PATHS.PROGRESS_STATE_JSON, nextIndex, usersFromLists.length);
         continue;
       }
 
@@ -600,18 +528,11 @@ export async function runSpammer(settings = {}) {
         } catch (resolveError) {
           const resolveMsg = getErrorMessage(resolveError);
           if (isSkippableError(resolveMsg)) {
-            console.log(`ПРОПУСК (недоступен) ${userLabel}: ${resolveMsg}`);
+            onProgress({ type: "skip", user: userLabel, reason: resolveMsg });
             await appendLog(userLabel, `Skipped: ${resolveMsg}`);
             processedUsers.add(dedupeKey);
-            await saveProcessedUsers(
-              PATHS.PROCESSED_USERS_JSON,
-              processedUsers,
-            );
-            await saveProgressState(
-              PATHS.PROGRESS_STATE_JSON,
-              nextIndex,
-              usersFromLists.length,
-            );
+            await saveProcessedUsers(PATHS.PROCESSED_USERS_JSON, processedUsers);
+            await saveProgressState(PATHS.PROGRESS_STATE_JSON, nextIndex, usersFromLists.length);
             continue;
           }
           throw resolveError;
@@ -619,35 +540,32 @@ export async function runSpammer(settings = {}) {
 
         const entityId = String(entity.id);
         if (existingDialogIds.has(entityId)) {
-          console.log(`ПРОПУСК (чат уже есть) ${userLabel}`);
+          onProgress({ type: "skip", user: userLabel, reason: "existing chat" });
           await appendLog(userLabel, "Skipped: existing chat");
           processedUsers.add(dedupeKey);
           await saveProcessedUsers(PATHS.PROCESSED_USERS_JSON, processedUsers);
-          await saveProgressState(
-            PATHS.PROGRESS_STATE_JSON,
-            nextIndex,
-            usersFromLists.length,
-          );
+          await saveProgressState(PATHS.PROGRESS_STATE_JSON, nextIndex, usersFromLists.length);
           continue;
         }
 
-        console.log(`[${attemptCounter}] Sending to ${userLabel} (source: ${messageSource})`);
+        onProgress({ type: "tick", index: rowIndex, total: usersFromLists.length, user: userLabel });
 
         if (messageSource === "txt") {
           const file = txtFiles[Math.floor(Math.random() * txtFiles.length)];
           if (isScheduling) {
             const scheduledUnix = Math.floor(computeNextPeakUtcMs() / 1000);
             await client.invoke(new Api.messages.SendMessage({
-              peer: entity,
-              message: file.text,
-              scheduleDate: scheduledUnix,
+              peer: entity, message: file.text, scheduleDate: scheduledUnix,
             }));
             const isoTime = new Date(scheduledUnix * 1000).toISOString();
-            console.log(`Scheduled text for ${userLabel} at ${isoTime}`);
             await appendLog(userLabel, `Scheduled: ${isoTime}`, 1);
+            onProgress({ type: "sent", user: userLabel });
+            consecutiveFloodErrors = 0;
           } else {
             await client.sendMessage(entity, { message: file.text });
             await appendLog(userLabel, "Success", 1);
+            onProgress({ type: "sent", user: userLabel });
+            consecutiveFloodErrors = 0;
           }
           processedUsers.add(dedupeKey);
           await saveProcessedUsers(PATHS.PROCESSED_USERS_JSON, processedUsers);
@@ -659,8 +577,10 @@ export async function runSpammer(settings = {}) {
               await appendLog(userLabel, `Scheduled: ${isoList}`, cachedSavedMessages.length);
               processedUsers.add(dedupeKey);
               await saveProcessedUsers(PATHS.PROCESSED_USERS_JSON, processedUsers);
+              onProgress({ type: "sent", user: userLabel });
+              consecutiveFloodErrors = 0;
             } else {
-              console.warn(`Could not schedule messages for ${userLabel}`);
+              onProgress({ type: "error", user: userLabel, message: "scheduling failed" });
               await appendLog(userLabel, "Error: scheduling failed");
             }
           } else {
@@ -668,87 +588,149 @@ export async function runSpammer(settings = {}) {
             await appendLog(userLabel, "Success", cachedSavedMessages.length);
             processedUsers.add(dedupeKey);
             await saveProcessedUsers(PATHS.PROCESSED_USERS_JSON, processedUsers);
+            onProgress({ type: "sent", user: userLabel });
+            consecutiveFloodErrors = 0;
+          }
+        } else if (messageSource === "text-seq") {
+          if (isScheduling) {
+            const scheduledMsList = await scheduleTextMessages(client, entity, textMessages);
+            if (scheduledMsList && scheduledMsList.length > 0) {
+              if (settings.maximAppendText) {
+                const lastMs = scheduledMsList[scheduledMsList.length - 1];
+                const appendMs = lastMs + randomInt(SCHEDULER_CONFIG.INTER_MESSAGE_GAP_MS_MIN, SCHEDULER_CONFIG.INTER_MESSAGE_GAP_MS_MAX);
+                try {
+                  await client.invoke(new Api.messages.SendMessage({
+                    peer: entity,
+                    message: settings.maximAppendText,
+                    scheduleDate: Math.floor(appendMs / 1000),
+                  }));
+                } catch (appendErr) {
+                  console.error(`Error scheduling append text:`, getErrorMessage(appendErr));
+                }
+              }
+              const isoList = scheduledMsList.map((ts) => new Date(ts).toISOString()).join(", ");
+              await appendLog(userLabel, `Scheduled: ${isoList}`, textMessages.length);
+              processedUsers.add(dedupeKey);
+              await saveProcessedUsers(PATHS.PROCESSED_USERS_JSON, processedUsers);
+              onProgress({ type: "sent", user: userLabel });
+              consecutiveFloodErrors = 0;
+            } else {
+              onProgress({ type: "error", user: userLabel, message: "scheduling failed" });
+              await appendLog(userLabel, "Error: scheduling failed");
+            }
+          } else {
+            try {
+              for (let i = 0; i < textMessages.length; i++) {
+                await client.sendMessage(entity, { message: textMessages[i] });
+                if (i < textMessages.length - 1) await sleep(RATE_LIMITS.INTER_MESSAGE_DELAY_MS);
+              }
+              if (settings.maximAppendText) {
+                await sleep(RATE_LIMITS.INTER_MESSAGE_DELAY_MS);
+                await client.sendMessage(entity, { message: settings.maximAppendText });
+              }
+              await appendLog(userLabel, "Success", textMessages.length);
+              processedUsers.add(dedupeKey);
+              await saveProcessedUsers(PATHS.PROCESSED_USERS_JSON, processedUsers);
+              onProgress({ type: "sent", user: userLabel });
+              consecutiveFloodErrors = 0;
+            } catch (err) {
+              const msg = getErrorMessage(err);
+              await appendLog(userLabel, `Error: ${msg}`);
+              throw err;
+            }
           }
         } else {
-          const { start, end, count } = getStrictSliceIndices(rowIndex - startIndex, intervals, cachedSavedMessages.length);
+          const fixedN = Math.max(1, Number(settings.maximN) || 1);
+          const { start, end } = getStrictSliceIndices(rowIndex - startIndex, intervals, cachedSavedMessages.length, fixedN);
           let messagesToSend = [];
           if (start < end && end <= cachedSavedMessages.length) {
             messagesToSend = cachedSavedMessages.slice(start, end);
           }
-          console.log(`interval ${count}, slice [${start}:${end}]`);
-
           if (messagesToSend.length === 0) {
-            console.warn("Нет сообщений для отправки по текущему интервалу!");
+            onProgress({ type: "skip", user: userLabel, reason: "no messages for interval" });
           } else if (isScheduling) {
             const scheduledMsList = await scheduleForwardMessagesViaTelegram(client, entity, messagesToSend);
             if (scheduledMsList && scheduledMsList.length > 0) {
-              const human = new Date(scheduledMsList[0]).toLocaleString();
-              console.log(`Запланировано ${messagesToSend.length} сообщений для ${userLabel}, ближайшая: ${human}`);
+              if (settings.maximAppendText) {
+                const lastMs = scheduledMsList[scheduledMsList.length - 1];
+                const appendMs = lastMs + randomInt(SCHEDULER_CONFIG.INTER_MESSAGE_GAP_MS_MIN, SCHEDULER_CONFIG.INTER_MESSAGE_GAP_MS_MAX);
+                try {
+                  await client.invoke(new Api.messages.SendMessage({
+                    peer: entity,
+                    message: settings.maximAppendText,
+                    scheduleDate: Math.floor(appendMs / 1000),
+                  }));
+                } catch (appendErr) {
+                  console.error(`Error scheduling append text:`, getErrorMessage(appendErr));
+                }
+              }
               const isoList = scheduledMsList.map((ts) => new Date(ts).toISOString()).join(", ");
               await appendLog(userLabel, `Scheduled: ${isoList}`, messagesToSend.length);
               processedUsers.add(dedupeKey);
               await saveProcessedUsers(PATHS.PROCESSED_USERS_JSON, processedUsers);
+              onProgress({ type: "sent", user: userLabel });
+              consecutiveFloodErrors = 0;
             } else {
-              console.warn(`Не удалось запланировать сообщения для ${userLabel}`);
+              onProgress({ type: "error", user: userLabel, message: "scheduling failed" });
               await appendLog(userLabel, "Error: scheduling failed");
             }
           } else {
             try {
               await forwardSavedMessagesWithGaps(client, entity, messagesToSend);
+              if (settings.maximAppendText) {
+                await sleep(RATE_LIMITS.INTER_MESSAGE_DELAY_MS);
+                await client.sendMessage(entity, { message: settings.maximAppendText });
+              }
               await appendLog(userLabel, "Success", messagesToSend.length);
               processedUsers.add(dedupeKey);
               await saveProcessedUsers(PATHS.PROCESSED_USERS_JSON, processedUsers);
+              onProgress({ type: "sent", user: userLabel });
+              consecutiveFloodErrors = 0;
             } catch (err) {
               const msg = getErrorMessage(err);
-              console.error(`Ошибка при мгновенной пересылке для ${userLabel}: ${msg}`);
               await appendLog(userLabel, `Error: ${msg}`);
-            throw err;
+              throw err;
+            }
           }
         }
-        } // end messageSource === "maxim"
       } catch (error) {
         const message = getErrorMessage(error);
 
         if (isSkippableError(message)) {
-          console.log(`ПРОПУСК (недоступен) ${userLabel}: ${message}`);
+          onProgress({ type: "skip", user: userLabel, reason: message });
           await appendLog(userLabel, `Skipped: ${message}`);
           processedUsers.add(dedupeKey);
           await saveProcessedUsers(PATHS.PROCESSED_USERS_JSON, processedUsers);
-          await saveProgressState(
-            PATHS.PROGRESS_STATE_JSON,
-            nextIndex,
-            usersFromLists.length,
-          );
+          await saveProgressState(PATHS.PROGRESS_STATE_JSON, nextIndex, usersFromLists.length);
           continue;
         }
 
-        console.error(`Ошибка для ${userLabel}: ${message}`);
+        onProgress({ type: "error", user: userLabel, message });
         await appendLog(userLabel, `Error: ${message}`);
 
         if (isPeerFloodError(message)) {
-          console.error("Обнаружен PEER_FLOOD. Пытаюсь снять ограничение...");
+          consecutiveFloodErrors++;
+          onProgress({ type: "flood", unblocking: !isScheduling && FLOOD_GUARD.CHECK_SPAM_BOT_STATUS });
+          
+          if (consecutiveFloodErrors >= FLOOD_BLOCK_THRESHOLD) {
+            console.error("\n\n⚠️  PERMANENT BLOCK DETECTED!");
+            console.error(`Account is permanently blocked (${consecutiveFloodErrors} consecutive PEER_FLOOD errors).`);
+            console.error(`Progress saved at row ${rowIndex + 1}. You may need to switch accounts.\n`);
+            await appendLog(userLabel, `PERMANENT BLOCK - stopping script (${consecutiveFloodErrors} consecutive PEER_FLOOD errors)`);
+            await saveProgressState(PATHS.PROGRESS_STATE_JSON, rowIndex, usersFromLists.length);
+            break;
+          }
+          
           let unblockSuccess = false;
 
           if (!isScheduling && FLOOD_GUARD.CHECK_SPAM_BOT_STATUS) {
-            try {
-              unblockSuccess = await attemptUnblock(client);
-            } catch (e) {
-              console.error(
-                "Попытка разблокировки завершилась исключением:",
-                e,
-              );
-            }
-          } else if (isScheduling) {
-            console.log("Пропускаю проверку @SpamBot в режиме Schedule.");
+            try { unblockSuccess = await attemptUnblock(client); } catch (e) { /* ignore */ }
           }
 
           if (unblockSuccess) {
-            console.log("✅ Ограничение снято, продолжаем обработку.");
             await appendLog(userLabel, "PEER_FLOOD resolved, continuing");
+            consecutiveFloodErrors = 0;
           } else {
-            console.error(
-              "❌ Разблокировка не удалась. Ждем 40 минут перед продолжением.",
-            );
             await sleep(FLOOD_GUARD.BAN_WAIT_MS);
             await appendLog(userLabel, "PEER_FLOOD wait 40min");
           }
@@ -756,65 +738,88 @@ export async function runSpammer(settings = {}) {
       }
 
       if (stopAfterCurrentUser) {
-        await saveProgressState(
-          PATHS.PROGRESS_STATE_JSON,
-          rowIndex,
-          usersFromLists.length,
-        );
-        console.log(
-          `Запуск остановлен на строке ${rowIndex + 1}. При следующем запуске будет повторная попытка.`,
-        );
+        await saveProgressState(PATHS.PROGRESS_STATE_JSON, rowIndex, usersFromLists.length);
+        console.log(t("stoppedAtRow", rowIndex + 1));
         break;
       }
 
-      await saveProgressState(
-        PATHS.PROGRESS_STATE_JSON,
-        nextIndex,
-        usersFromLists.length,
-      );
+      await saveProgressState(PATHS.PROGRESS_STATE_JSON, nextIndex, usersFromLists.length);
 
       if ((rowIndex + 1) % FLOOD_GUARD.CHECK_INTERVAL_USERS === 0) {
         if (!isScheduling && FLOOD_GUARD.CHECK_SPAM_BOT_STATUS) {
-          console.log(
-            `🔄 Проверка статуса аккаунта через @SpamBot (после строки ${rowIndex + 1})...`,
-          );
+          console.log(t("spamBotChecking", rowIndex + 1));
           try {
             const status = await getSpamBotStatus(client);
             if (status.hasRestriction === true) {
-              console.log(
-                "⚠️ SpamBot сообщает об ограничениях. Запускаю разблокировку...",
-              );
+              console.log(t("spamBotRestricted"));
               await attemptUnblock(client);
             } else if (status.hasRestriction === false) {
-              console.log("✅ SpamBot сообщает, что ограничений нет.");
+              console.log(t("spamBotOk"));
             } else {
-              console.log("⚠️ Не удалось определить статус через SpamBot.");
+              console.log(t("spamBotUnknown"));
             }
           } catch (error) {
-            console.error("Ошибка при проверке статуса SpamBot:", error);
+            console.error(t("spamBotCheckError"), error);
           }
         } else if (isScheduling) {
-          console.log(
-            "Пропуск периодической проверки @SpamBot в режиме Schedule.",
-          );
+          console.log(t("skipSpamBotSchedule"));
         }
       }
 
       if (attemptCounter % RATE_LIMITS.USERS_PER_BATCH === 0) {
-        console.log(
-          `Пакет завершен (${attemptCounter} пользователей). Пауза ${Math.floor(RATE_LIMITS.BATCH_SLEEP_MS / 60000)} минут...`,
-        );
+        console.log(t("batchDone", attemptCounter, Math.floor(RATE_LIMITS.BATCH_SLEEP_MS / 60000)));
         await sleep(RATE_LIMITS.BATCH_SLEEP_MS);
       }
 
       await sleep(RATE_LIMITS.INTER_USER_DELAY_MS);
     }
   } finally {
-    const orig = {
-      info: console.info,
-      debug: console.debug,
-      warn: console.warn,
-    };
+    const orig = { info: console.info, debug: console.debug, warn: console.warn };
+    try {
+      console.info = () => {};
+      console.debug = () => {};
+      console.warn = () => {};
+      await client.disconnect();
+    } finally {
+      console.info = orig.info;
+      console.debug = orig.debug;
+      console.warn = orig.warn;
+    }
+  }
+}
+
+export async function runTestSend(settings = {}) {
+  const { apiId, apiHash, forceSms, authMethod } = validateEnv();
+  const client = await startClient(apiId, apiHash, forceSms, authMethod);
+
+  try {
+    const messageSource = settings.messageSource || "maxim";
+
+    if (messageSource === "text-seq") {
+      const msgs = Array.isArray(settings.textMessages) ? settings.textMessages : [];
+      if (msgs.length === 0) throw new Error(t("noTextMessages"));
+      for (let i = 0; i < msgs.length; i++) {
+        await client.sendMessage("me", { message: msgs[i] });
+        if (i < msgs.length - 1) await sleep(RATE_LIMITS.INTER_MESSAGE_DELAY_MS);
+      }
+    } else {
+      const ivals = parseIntervals(settings.maximIntervals || "");
+      const fixedN = Math.max(1, Number(settings.maximN) || 1);
+      const maxN = ivals.length ? ivals.reduce((a, b) => a + b, 0) : fixedN;
+      const rawSaved = await client.getMessages("me", { limit: maxN });
+      if (!rawSaved || rawSaved.length === 0) throw new Error(t("noMaximMessages"));
+      const msgs = [...rawSaved].reverse();
+      const { start, end } = getStrictSliceIndices(0, ivals, msgs.length, fixedN);
+      const toSend = msgs.slice(start, end);
+      await forwardSavedMessages(client, "me", toSend);
+    }
+
+    if (settings.maximAppendText) {
+      await sleep(RATE_LIMITS.INTER_MESSAGE_DELAY_MS);
+      await client.sendMessage("me", { message: settings.maximAppendText });
+    }
+  } finally {
+    const orig = { info: console.info, debug: console.debug, warn: console.warn };
     try {
       console.info = () => {};
       console.debug = () => {};
