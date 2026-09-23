@@ -1,0 +1,14 @@
+version: '3.8'
+services:
+  app:
+    build: .
+    stdin_open: true # allows interactive shell
+    tty: true        # allows interactive shell
+    volumes:
+      - ./.env:/app/.env
+      - ./storage:/app/storage
+      - ./lists:/app/lists
+      - ./messages:/app/messages
+      - ./parse:/app/parse
+      - ./reports:/app/reports
+      - ./logs:/app/logs
